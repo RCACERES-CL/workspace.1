@@ -1,0 +1,184 @@
+
+//Se necesitará una clase para manejar la información a homogonizar con los parámetros necesarios.
+
+public class DatabaseMigration
+{
+    public string SourceDatabase {get; set;}
+    public string TargetDatabase {get; set;}
+    public List<string> SourceObjects {get; set;}
+    public List<string> TargetObjects {get; set;}
+    public List<MigrationScript> MigrationScripts {get; set;}
+}
+
+// Clase para representar un script de migración.
+public class MigrationScript
+{
+    public string Text {get; set;}
+    public string SourceObject {get; set;}
+    public string TargetObject {get; set;}
+    public string SourceDatabase {get; set;}
+    public string TargetDatabase {get; set;}
+}
+
+public DatabaseMigration GenerateMigrationScript(string sourceDatabase, string targetDatabase)
+{
+    //Crear una instancia de la clase DatabaseMigration.
+    DatabaseMigration migration = new DatabaseMigration();
+    migration.SourceDatabase = sourceDatabase;
+    migration.TargetDatabase = targetDatabase;
+
+    //Definir la lista de objetos de origen.
+    List<string> sourceObjects = new List<string>();
+
+    //Definir la lista de objetos destino.
+    List<string> targetObjects = new List<string>();
+
+    using (SqlConnection sourceConn = new SqlConnection(sourceDatabase))
+    {
+        sourceConn.Open();
+        using (SqlCommand sourceCmd = new SqlCommand("SELECT name FROM sys.objects", sourceConn))
+        {
+            using (SqlDataReader sourceReader = sourceCmd.ExecuteReader())
+            {
+                while (sourceReader.Read())
+                {
+                    //Añadir cada objeto de origen a la lista sourceObjects.
+                    sourceObjects.Add(sourceReader.GetString(0));
+                }
+            }
+        }
+    }
+
+    using (SqlConnection targetConn = new SqlConnection(targetDatabase))
+    {
+        targetConn.Open();
+        using (SqlCommand targetCmd = new SqlCommand("SELECT name FROM sys.objects", targetConn))
+        {
+            using (SqlDataReader targetReader = targetCmd.ExecuteReader())
+            {
+                while (targetReader.Read())
+                {
+                    //Añadir cada objeto de destino a la lista targetObjects.
+                    targetObjects.Add(targetReader.GetString(0));
+                }
+            }
+        }
+    }
+
+    //Crear la lista de scripts de migración.
+    List<MigrationScript> migrationScripts = new List<MigrationScript>();
+
+    //Iterar cada objeto de origen.
+    foreach (string sourceObjectName in sourceObjects)
+    {
+        // Verificar si el objeto está presente en la base de datos destino.
+        if (targetObjects.Contains(sourceObjectName))
+        {
+            // Verificar si la estructura del objeto es la misma.
+            if (!IsStructureSame(sourceDatabase, targetDatabase, sourceObjectName))
+            {
+                //Si hay diferencias entonces agregar un script alter.
+                MigrationScript alterScript = new MigrationScript();
+                alterScript.SourceDatabase = sourceDatabase;
+                alterScript.TargetDatabase = targetDatabase;
+                alterScript.SourceObject = sourceObjectName;
+                alterScript.TargetObject = sourceObjectName;
+
+                //Generar el script alter.
+                alterScript.Text = GenerateAlterScript(sourceDatabase, targetDatabase, sourceObjectName);
+                migrationScripts.Add(alterScript);
+            }
+        }
+        else
+        {
+            //Si el objeto no existe en la base de datos destino, entonces agregar un script create.
+            MigrationScript createScript = new MigrationScript();
+            createScript.SourceDatabase = sourceDatabase;
+            createScript.TargetDatabase = targetDatabase;
+            createScript.SourceObject = sourceObjectName;
+            createScript.TargetObject = sourceObjectName;
+
+            //Generar el script create.
+            createScript.Text = GenerateCreateScript(sourceDatabase, sourceObjectName);
+            migrationScripts.Add(createScript);
+        }
+    }
+
+    // Establecer los valores necesarios en la instancia de DatabaseMigration y devolverlo.
+    migration.SourceObjects = sourceObjects;
+    migration.TargetObjects = targetObjects;
+    migration.MigrationScripts = migrationScripts;
+
+    return migration;
+}
+
+//Método para determinar si la estructura de un objeto es igual.
+
+private bool IsStructureSame(string sourceDatabase, string targetDatabase, string objectName)
+{
+    using (SqlConnection sourceConn = new SqlConnection(sourceDatabase))
+    {
+        sourceConn.Open();
+        using (SqlCommand sourceCmd = new SqlCommand($"SELECT definition FROM sys.sql_modules WHERE object_id = OBJECT_ID('{objectName}')", sourceConn))
+        {
+            string sourceDefinition = sourceCmd.ExecuteScalar().ToString();
+
+            using (SqlConnection targetConn = new SqlConnection(targetDatabase))
+            {
+                targetConn.Open();
+
+                using (SqlCommand targetCmd = new SqlCommand($"SELECT definition FROM sys.sql_modules WHERE object_id = OBJECT_ID('{objectName}')", targetConn))
+                {
+                    string targetDefinition = targetCmd.ExecuteScalar().ToString();
+
+                    return sourceDefinition == targetDefinition;
+                }
+            }
+        }
+    }
+}
+
+// Método para generar un script alter.
+
+private string GenerateAlterScript(string sourceDatabase, string targetDatabase, string objectName)
+{
+    StringBuilder script = new StringBuilder();
+    script.AppendLine($"-- Script para alterar el objeto '{objectName}' en la base de datos '{targetDatabase}' para homologarlo con la base de datos '{sourceDatabase}'");
+    script.AppendLine("BEGIN TRANSACTION");
+
+    using (SqlConnection sourceConn = new SqlConnection(sourceDatabase))
+    {
+        sourceConn.Open();
+        using (SqlCommand sourceCmd = new SqlCommand($"SELECT definition FROM sys.sql_modules WHERE object_id = OBJECT_ID('{objectName}')", sourceConn))
+        {
+            string definition = sourceCmd.ExecuteScalar().ToString();
+
+            script.AppendLine($"ALTER {definition}");
+        }
+    }
+    
+    script.AppendLine("COMMIT TRANSACTION");
+    return script.ToString();
+}
+
+//Método para generar un script create.
+private string GenerateCreateScript(string sourceDatabase, string objectName)
+{
+    StringBuilder script = new StringBuilder();
+    script.AppendLine($"--Script para crear el objeto '{objectName}' en la base de datos de destino");
+    script.AppendLine("BEGIN TRANSACTION");
+
+    using (SqlConnection sourceConn = new SqlConnection(sourceDatabase))
+    {
+        sourceConn.Open();
+        using (SqlCommand sourceCmd = new SqlCommand($"SELECT definition FROM sys.sql_modules WHERE object_id = OBJECT_ID('{objectName}')", sourceConn))
+        {
+            string definition = sourceCmd.ExecuteScalar().ToString();
+
+            script.AppendLine($"CREATE {definition}");
+        }
+    }
+
+    script.AppendLine("COMMIT TRANSACTION");
+    return script.ToString();
+}
